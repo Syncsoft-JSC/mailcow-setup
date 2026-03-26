@@ -5,73 +5,30 @@
 **Server:** EC2 `i-0fec63c97b3fa9362`, IP `15.135.14.30`
 **Old domain:** `portal-syncsoft.com` (to be removed)
 **New domain:** `syncsoft.ai`
-
-**Pre-requisite:** Move `syncsoft.ai` DNS to Route 53 (NS transfer from GoDaddy)
-
----
-
-## Phase 1: Move syncsoft.ai DNS to Route 53 (Day 1)
-
-### Task 1: Create Hosted Zone in Route 53
-
-- [ ] **Step 1: Create hosted zone**
-
-```bash
-aws route53 create-hosted-zone \
-  --name syncsoft.ai \
-  --caller-reference "syncsoft-ai-$(date +%s)" \
-  --profile default \
-  --query 'HostedZone.Id' \
-  --output text
-```
-
-Save the Hosted Zone ID.
-
-- [ ] **Step 2: Get NS records from Route 53**
-
-```bash
-aws route53 get-hosted-zone \
-  --id HOSTED_ZONE_ID \
-  --profile default \
-  --query 'DelegationSet.NameServers'
-```
-
-Save the 4 NS records (e.g., `ns-xxx.awsdns-xx.xxx`).
-
-- [ ] **Step 3: Copy existing DNS records from GoDaddy**
-
-Before changing NS, note down all existing records on GoDaddy (A record `216.198.79.1`, TXT google-site-verification, etc.) and recreate them in Route 53.
-
-- [ ] **Step 4: Update NS on GoDaddy**
-
-In GoDaddy DNS management for `syncsoft.ai`:
-- Change nameservers to the 4 AWS NS records from Step 2
-- Remove old GoDaddy nameservers (`ns45.domaincontrol.com`, `ns46.domaincontrol.com`)
-
-> **Note:** NS propagation takes 24-48 hours. Wait for propagation before proceeding.
-
-- [ ] **Step 5: Verify NS propagation**
-
-```bash
-dig syncsoft.ai NS +short
-```
-
-Expected: Shows AWS nameservers.
+**Old Hosted Zone ID:** `Z09305612IEOUCEGO7H9X` (portal-syncsoft.com)
+**New Hosted Zone ID:** `Z075035939H0BYDEY4QBK` (syncsoft.ai)
 
 ---
 
-## Phase 2: Configure Mail DNS Records (Day 1-2)
+## Phase 1: Move syncsoft.ai DNS to Route 53 — DONE
+
+NS already transferred. Hosted Zone `Z075035939H0BYDEY4QBK` active with AWS nameservers.
+
+---
+
+## Phase 2: Configure Mail DNS Records
 
 ### Task 2: Create DNS Records for Mail
 
-- [ ] **Step 1: Create all mail DNS records**
+- [ ] **Step 1: Restore google-site-verification TXT record (lost during NS transfer)**
+
+- [ ] **Step 2: Create all mail DNS records**
 
 ```bash
-ZONE_ID="HOSTED_ZONE_ID"  # Replace with actual Zone ID
 EIP="15.135.14.30"
 
 aws route53 change-resource-record-sets \
-  --hosted-zone-id $ZONE_ID \
+  --hosted-zone-id Z075035939H0BYDEY4QBK \
   --profile default \
   --change-batch "{
     \"Changes\": [
@@ -145,22 +102,22 @@ aws route53 change-resource-record-sets \
   }"
 ```
 
-> **Note:** SPF TXT record includes both SPF and existing google-site-verification in the same record set.
-
-- [ ] **Step 2: Verify DNS propagation**
+- [ ] **Step 3: Verify DNS propagation**
 
 ```bash
 dig mail.syncsoft.ai A +short
 dig syncsoft.ai MX +short
 dig syncsoft.ai TXT +short
 dig _dmarc.syncsoft.ai TXT +short
+dig autoconfig.syncsoft.ai A +short
+dig autodiscover.syncsoft.ai A +short
 ```
 
 ---
 
-## Phase 3: Configure Mailcow (Day 2)
+## Phase 3: Configure Mailcow
 
-### Task 3: Update Mailcow Hostname
+### Task 3: Update Mailcow Hostname & Config
 
 - [ ] **Step 1: Update hostname on server**
 
@@ -176,7 +133,15 @@ cd /opt/mailcow-dockerized
 sudo sed -i 's/MAILCOW_HOSTNAME=mail.portal-syncsoft.com/MAILCOW_HOSTNAME=mail.syncsoft.ai/' mailcow.conf
 ```
 
-- [ ] **Step 3: Restart Mailcow**
+- [ ] **Step 3: Update ADDITIONAL_SAN if present**
+
+```bash
+# Check if ADDITIONAL_SAN exists and add new domain
+grep ADDITIONAL_SAN /opt/mailcow-dockerized/mailcow.conf
+# If it exists, add mail.syncsoft.ai to the list
+```
+
+- [ ] **Step 4: Restart Mailcow**
 
 ```bash
 cd /opt/mailcow-dockerized
@@ -189,13 +154,13 @@ Wait for all containers to be running:
 sudo docker compose ps
 ```
 
-### Task 4: Add Domain & DKIM in Mailcow
+> **Note:** SSL cert will auto-renew via Let's Encrypt for the new hostname. May take a few minutes.
+
+### Task 4: Add Domain & DKIM in Mailcow (Manual — UI)
 
 - [ ] **Step 1: Login to Mailcow Admin**
 
-URL: `https://mail.syncsoft.ai/admin` (after SSL cert is issued)
-
-> **Note:** SSL cert will auto-renew via Let's Encrypt for the new hostname. May take a few minutes. If cannot access via new hostname, use IP temporarily: `https://15.135.14.30/admin`
+URL: `https://mail.syncsoft.ai/admin` or `https://15.135.14.30/admin`
 
 - [ ] **Step 2: Add domain `syncsoft.ai`**
 
@@ -208,14 +173,14 @@ Go to: E-Mail → Configuration → Domains → Add domain
 
 - [ ] **Step 3: Copy DKIM key**
 
-Go to: E-Mail → Configuration → click DNS button on `syncsoft.ai`
-Copy the DKIM TXT record value.
+Go to: E-Mail → Configuration → click **DNS** button on `syncsoft.ai`
+Copy the DKIM TXT record value → paste to Claude.
 
 - [ ] **Step 4: Add DKIM record to Route 53**
 
 ```bash
 aws route53 change-resource-record-sets \
-  --hosted-zone-id HOSTED_ZONE_ID \
+  --hosted-zone-id Z075035939H0BYDEY4QBK \
   --profile default \
   --change-batch "{
     \"Changes\": [
@@ -238,7 +203,7 @@ aws route53 change-resource-record-sets \
 dig dkim._domainkey.syncsoft.ai TXT +short
 ```
 
-### Task 5: Create Mailboxes
+### Task 5: Create Mailboxes (Manual — UI)
 
 - [ ] **Step 1: Create admin mailbox**
 
@@ -257,41 +222,78 @@ In Mailcow UI → E-Mail → Configuration → Mailboxes → Add mailbox
 
 - [ ] **Step 3: Create employee mailboxes as needed**
 
-### Task 6: Remove Old Domain
+### Task 6: Update rDNS (PTR record)
 
-- [ ] **Step 1: Delete old mailboxes on portal-syncsoft.com**
+- [ ] **Step 1: Update rDNS to point to new hostname**
+
+```bash
+aws ec2 modify-address-attribute \
+  --allocation-id eipalloc-0da63ebf65930bac5 \
+  --domain-name mail.syncsoft.ai \
+  --profile default \
+  --region ap-southeast-2
+```
+
+- [ ] **Step 2: Verify rDNS update**
+
+```bash
+aws ec2 describe-addresses-attribute \
+  --allocation-ids eipalloc-0da63ebf65930bac5 \
+  --attribute domain-name \
+  --profile default \
+  --region ap-southeast-2
+```
+
+Expected: `mail.syncsoft.ai` with status PENDING or completed.
+
+- [ ] **Step 3: Verify PTR record**
+
+```bash
+dig -x 15.135.14.30 +short
+```
+
+Expected: `mail.syncsoft.ai.`
+
+### Task 7: Remove Old Domain
+
+- [ ] **Step 1: Delete old mailboxes** (Manual — UI)
 
 In Mailcow UI → E-Mail → Configuration → Mailboxes
 - Remove `admin@portal-syncsoft.com`
 - Remove `noreply@portal-syncsoft.com`
 
-- [ ] **Step 2: Delete old domain from Mailcow**
+- [ ] **Step 2: Delete old domain from Mailcow** (Manual — UI)
 
 In Mailcow UI → E-Mail → Configuration → Domains
 - Remove `portal-syncsoft.com`
 
-- [ ] **Step 3: Clean up old DNS records on Route 53**
+- [ ] **Step 3: Clean up ALL old mail DNS records on Route 53**
 
 ```bash
-# Delete mail-related records from portal-syncsoft.com hosted zone
 aws route53 change-resource-record-sets \
   --hosted-zone-id Z09305612IEOUCEGO7H9X \
   --profile default \
   --change-batch '{
     "Changes": [
-      {"Action": "DELETE", "ResourceRecordSet": {"Name": "mail.portal-syncsoft.com", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}},
-      {"Action": "DELETE", "ResourceRecordSet": {"Name": "portal-syncsoft.com", "Type": "MX", "TTL": 3600, "ResourceRecords": [{"Value": "10 mail.portal-syncsoft.com"}]}},
-      {"Action": "DELETE", "ResourceRecordSet": {"Name": "autoconfig.portal-syncsoft.com", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}},
-      {"Action": "DELETE", "ResourceRecordSet": {"Name": "autodiscover.portal-syncsoft.com", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}}
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "mail.portal-syncsoft.com.", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "portal-syncsoft.com.", "Type": "MX", "TTL": 3600, "ResourceRecords": [{"Value": "10 mail.portal-syncsoft.com"}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "portal-syncsoft.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{"Value": "\"v=spf1 a mx ip4:15.135.14.30 ~all\""}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "_dmarc.portal-syncsoft.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{"Value": "\"v=DMARC1; p=quarantine; rua=mailto:admin@portal-syncsoft.com\""}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "dkim._domainkey.portal-syncsoft.com.", "Type": "TXT", "TTL": 3600, "ResourceRecords": [{"Value": "\"v=DKIM1;k=rsa;t=s;s=email;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAprOKyRBOwnHDDJ6NvizROoch5OM0Oo/5Yp5Cw4hRPvhfuvBTToC7eNJHf6iQXik1uVbNMokz0qakrZ3OJlJSFtmSyN6zkBHsUSB9d0hjw7QxC6haMHFxHoZSb3nU4+lVQpVXXaI5yjscFlUfgDinoea8X50h0ZVuPMWRAtA6wZU32qhgR9cxM\" \"MSvWrmpD4ReEEq7ygbmS5s12yeEa6yEFDmNw/MOYkv2jgJiM02x9r8ipGXtGYswUfjTmAsRxVQJx50Z2E28zVupiylLaGUeFOtWBHa1Em7R0EF12eKChWK0DZTLXwLQTbSBlPExBgM3ONys04xSS1BW+sQWhFURxQIDAQAB\""}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "_autodiscover._tcp.portal-syncsoft.com.", "Type": "SRV", "TTL": 3600, "ResourceRecords": [{"Value": "0 1 443 mail.portal-syncsoft.com"}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "autoconfig.portal-syncsoft.com.", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}},
+      {"Action": "DELETE", "ResourceRecordSet": {"Name": "autodiscover.portal-syncsoft.com.", "Type": "A", "TTL": 300, "ResourceRecords": [{"Value": "15.135.14.30"}]}}
     ]
   }'
 ```
 
+> **Note:** Only mail-related records are deleted. Other records (app, api, stg, etc.) are NOT touched.
+
 ---
 
-## Phase 4: Verify & Test (Day 2)
+## Phase 4: Verify & Test
 
-### Task 7: Test Email
+### Task 8: Test Email Delivery
 
 - [ ] **Step 1: Send test email from webmail**
 
@@ -312,8 +314,6 @@ Reply from Gmail to `admin@syncsoft.ai` — verify it arrives in Mailcow.
 
 - [ ] **Step 5: Update SNS alert subscriber**
 
-After mailboxes are working, add `admin@syncsoft.ai` to SNS topic:
-
 ```bash
 aws sns subscribe \
   --topic-arn arn:aws:sns:ap-southeast-2:650008108447:mailcow-alerts \
@@ -327,12 +327,15 @@ aws sns subscribe \
 
 ## Summary
 
-| Phase | Tasks | Timeline |
-|-------|-------|----------|
-| Phase 1: Move DNS to Route 53 | Task 1 | Day 1 (wait NS propagation) |
-| Phase 2: Create mail DNS records | Task 2 | Day 1-2 |
-| Phase 3: Configure Mailcow | Tasks 3-6 | Day 2 |
-| Phase 4: Verify & Test | Task 7 | Day 2 |
+| Phase | Tasks | What | Who |
+|-------|-------|------|-----|
+| Phase 1 | Task 1 | Move DNS to Route 53 | **DONE** |
+| Phase 2 | Task 2 | Create mail DNS records | Claude (CLI) |
+| Phase 3 | Task 3 | Update hostname + Mailcow config | Claude (SSH) |
+| Phase 3 | Task 4 | Add domain + DKIM | **User (Mailcow UI)** + Claude (DNS) |
+| Phase 3 | Task 5 | Create mailboxes | **User (Mailcow UI)** |
+| Phase 3 | Task 6 | Update rDNS (PTR) | Claude (CLI) |
+| Phase 3 | Task 7 | Remove old domain + cleanup DNS | **User (Mailcow UI)** + Claude (CLI) |
+| Phase 4 | Task 8 | Test email delivery | **User (browser)** + Claude (CLI) |
 
-**Total estimated time:** 1-2 days (including NS propagation wait)
-**Downtime:** Minimal — old domain stops working when removed, new domain works immediately after DNS propagation.
+**Total estimated time:** ~1 hour (DNS already propagated)
